@@ -1,5 +1,10 @@
 package cirilo.atc.service;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -10,21 +15,17 @@ import java.util.Base64;
 @Service
 public class GeminiService {
 
+    private static final Logger logger = LoggerFactory.getLogger(GeminiService.class);
+
     @Value("${GEMINI_API_KEY}")
     private String apiKey;
 
-    // OLD DEPRECATED MODEL
-    // private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1alpha/models/gemini-pro-vision:generateContent";
+    // Choose your desired Gemini model URL here
+    // Example using a common flash model, adjust if needed:
+    //private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent";
+    // private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent"; // As per your previous file
+     private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1alpha/models/gemini-2.5-flash-preview-05-20:generateContent";
 
-    // SUGGESTED NEWER MODEL (as per Google's error message and your previous Node.js example)
-    // Note: The Node.js example used "gemini-1.5-flash-preview-0514", the error suggests "gemini-1.5-flash".
-    // Let's use the more general "gemini-1.5-flash-latest" or a specific preview if you know it works best.
-    // Or directly what Google suggested:
-    private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent";
-    // Alternatively, if you want to stick to the alpha/preview from your Node.js example (if it's still valid and works):
-    // private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1alpha/models/gemini-1.5-flash-preview-0514:generateContent";
-    // Or the direct suggestion from the error:
-    // private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"; // Note: often models have -latest or a preview tag.
 
     private final RestTemplate restTemplate;
 
@@ -32,112 +33,168 @@ public class GeminiService {
         this.restTemplate = restTemplate;
     }
 
-    public String processImage(byte[] imageBytes, String targetLanguage, int processedWidth, int processedHeight) {
-        String payload = buildGeminiPayload(imageBytes, targetLanguage, processedWidth, processedHeight);
-        System.out.println("Enviando requisição para Gemini com o modelo: " + GEMINI_URL); // Log the model being used
+    // Modified to include sourceLanguage
+    public String processImage(byte[] imageBytes, String sourceLanguage, String targetLanguage, int processedWidth, int processedHeight) {
+        String payload = buildGeminiPayload(imageBytes, sourceLanguage, targetLanguage, processedWidth, processedHeight);
+        logger.info("Enviando requisição para Gemini com o modelo: {}", GEMINI_URL);
+        logger.debug("Payload para Gemini: {}", payload); // Log payload for debugging if needed (can be large)
         long startTime = System.currentTimeMillis();
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        HttpEntity<String> requestEntity = new HttpEntity<>(payload, headers); // Renamed for clarity
+        HttpEntity<String> requestEntity = new HttpEntity<>(payload, headers);
         String url = GEMINI_URL + "?key=" + apiKey;
 
         ResponseEntity<String> response = restTemplate.postForEntity(url, requestEntity, String.class);
 
         if (!response.getStatusCode().is2xxSuccessful()) {
-            System.err.println("Erro na API Gemini: " + response.getBody());
-            // It's good that HttpClientErrorException is thrown here, which your GlobalExceptionHandler can catch.
-            // The exception already contains the status code and body.
+            logger.error("Erro na API Gemini: {} - {}", response.getStatusCode(), response.getBody());
             throw new RuntimeException("Erro na API Gemini: " + response.getStatusCode() + " - " + response.getBody());
         }
 
         long duration = System.currentTimeMillis() - startTime;
-        System.out.printf("Resposta recebida em %d ms%n", duration);
+        logger.info("Resposta recebida da Gemini em {} ms", duration);
 
-        return response.getBody();
+        // Console output for Gemini's raw response
+        String geminiRawResponse = response.getBody();
+        System.out.println("=============== RAW GEMINI RESPONSE START ===============");
+        System.out.println(geminiRawResponse);
+        System.out.println("================ RAW GEMINI RESPONSE END ================");
+        logger.debug("Raw Gemini Response: {}", geminiRawResponse);
+
+
+        return geminiRawResponse;
     }
 
-    private String buildGeminiPayload(byte[] imageBytes, String targetLanguage, int processedWidth, int processedHeight) {
-        String base64Image = Base64.getEncoder().encodeToString(imageBytes);
-        String targetLanguageName = getLanguageName(targetLanguage);
+    // Método existente processImage(...) permanece igual
 
-        String prompt = String.format("""
-        Você é um especialista em análise de imagem de mangás. Sua tarefa é localizar com precisão todos os balões de fala e texto em uma página de mangá.
+    /**
+     * Traduz um bloco de texto usando a API Gemini.
+     * @param textToTranslate O texto a ser traduzido.
+     * @param sourceLanguage O código do idioma de origem (ex: "ja", "en").
+     * @param targetLanguage O código do idioma de destino (ex: "pt-br", "en").
+     * @return O texto traduzido, ou uma mensagem de erro/fallback.
+     */
+    public String translateText(String textToTranslate, String sourceLanguage, String targetLanguage) {
+        logger.info("Requisitando tradução do Gemini para o texto. Origem: {}, Destino: {}", sourceLanguage, targetLanguage);
+        String payload = buildTextTranslationPayload(textToTranslate, sourceLanguage, targetLanguage);
+        // logger.debug("Payload de tradução para Gemini: {}", payload); // Pode ser verboso
+        long startTime = System.currentTimeMillis();
 
-        INFORMAÇÕES IMPORTANTES:
-        - A imagem que você está analisando tem %d x %d pixels.
-        - TODAS as coordenadas que você fornecer DEVEM ser baseadas nestas dimensões exatas.
-        - Seja extremamente preciso nas coordenadas para garantir perfeito alinhamento. A qualidade do resultado final depende da sua precisão. Verifique seu trabalho com cuidado.
-        - Antes de enviar a respostar verificar se bounding box está deslocado do centro do balão!
-                import cv2
-                
-                def refine_bounding_box(image, initial_box, padding=20):
-                    x, y, w, h = initial_box["x"], initial_box["y"], initial_box["width"], initial_box["height"]
-                    roi = image[y:y+h, x:x+w]
-                
-                    # Aumenta um pouco o ROI para capturar bordas do balão
-                    roi = cv2.copyMakeBorder(roi, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=[255,255,255])
-                
-                    # Converte para escala de cinza e aplica limiar
-                    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
-                
-                    # Detecta contornos
-                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if not contours:
-                        return initial_box
-                
-                    # Encontra o maior contorno (provavelmente o balão)
-                    largest = max(contours, key=cv2.contourArea)
-                    x2, y2, w2, h2 = cv2.boundingRect(largest)
-                
-                    # Corrige coordenadas em relação à imagem original
-                    return {
-                        "x": x + x2 - padding,
-                        "y": y + y2 - padding,
-                        "width": w2,
-                        "height": h2
-                    }
-                
-        INSTRUÇÕES:
-        1. Detecte TODOS os balões de diálogo na imagem
-            2. Execute OCR do texto dentro de cada balão em '%s'
-            3. Traduza o texto para '%s'
-            4. Retorne APENAS um JSON array com objetos contendo:
-        ESTRUTURA DE SAÍDA JSON OBRIGATÓRIA:
-        {
-          "balloons": [
-            {
-              "original_text": "texto japonês original",
-              "translated_text": "texto traduzido",
-              "balloon_type": "tipo do balão ('normal', 'thought', 'shout', 'text_only')",
-              "bounding_box": {
-                "x": número (coordenada X do canto superior esquerdo em pixels),
-                "y": número (coordenada Y do canto superior esquerdo em pixels),
-                "width": número (LARGURA do balão em pixels),
-                "height": número (ALTURA do balão em pixels)
-              }
-            }
-          ]
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        HttpEntity<String> requestEntity = new HttpEntity<>(payload, headers);
+        // Usando a mesma GEMINI_URL
+        // Se um endpoint de modelo apenas de texto for preferido, defina outra constante.
+        String url = GEMINI_URL + "?key=" + apiKey;
+
+        ResponseEntity<String> response;
+        try {
+            response = restTemplate.postForEntity(url, requestEntity, String.class);
+        } catch (Exception e) {
+            logger.error("Erro ao chamar a API Gemini para tradução de texto: {}", e.getMessage(), e);
+            return "Erro na comunicação com o serviço de tradução"; // Fallback
         }
-                5. Coordenadas devem ser em pixels absolutos
-                            6. Mantenha a ordem original dos balões
-                            7. Formato de resposta EXCLUSIVAMENTE JSON, sem comentários
-        REGRAS CRÍTICAS:
-        - Precisão é tudo. As coordenadas (x, y, width, height) devem delinear perfeitamente o balão/texto original.
-        - As coordenadas devem ser em PIXELS e relativas às dimensões %d x %d.
-        - Se nenhum texto for encontrado, retorne: {"balloons": []}.
-        """, processedWidth, processedHeight, targetLanguageName, processedWidth, processedHeight, processedWidth, processedHeight);
 
-        // Ensure the generation_config is compatible with the new model.
-        // "gemini-1.5-flash" models typically use "application/json" for response_mime_type.
+
+        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+            logger.error("Erro na API Gemini (translateText): {} - {}", response.getStatusCode(), response.getBody());
+            return "Falha ao traduzir texto"; // Fallback
+        }
+
+        long duration = System.currentTimeMillis() - startTime;
+        logger.info("Tradução recebida do Gemini em {} ms", duration);
+
+        String geminiRawResponse = response.getBody();
+        // System.out.println("=============== RAW GEMINI TRANSLATION RESPONSE START ===============");
+        // System.out.println(geminiRawResponse);
+        // System.out.println("================ RAW GEMINI TRANSLATION RESPONSE END ================");
+        logger.debug("Raw Gemini Translation Response: {}", geminiRawResponse);
+
+        // Extrai o texto traduzido da resposta do Gemini
+        try {
+            JSONObject rootResponse = new JSONObject(geminiRawResponse);
+            if (rootResponse.has("candidates")) {
+                JSONArray candidates = rootResponse.getJSONArray("candidates");
+                if (!candidates.isEmpty()) {
+                    JSONObject firstCandidate = candidates.getJSONObject(0);
+                    if (firstCandidate.has("content") && firstCandidate.getJSONObject("content").has("parts")) {
+                        JSONArray parts = firstCandidate.getJSONObject("content").getJSONArray("parts");
+                        if (!parts.isEmpty() && parts.getJSONObject(0).has("text")) {
+                            return parts.getJSONObject(0).getString("text").trim();
+                        }
+                    }
+                }
+            }
+            logger.warn("Não foi possível extrair texto traduzido da resposta do Gemini (translateText): {}", geminiRawResponse);
+            return textToTranslate; // Retorna o original como fallback se a extração falhar
+        } catch (JSONException e) {
+            logger.error("Erro ao parsear JSON da tradução do Gemini (translateText): {}", e.getMessage(), e);
+            return textToTranslate; // Retorna o original como fallback
+        }
+    }
+
+    private String buildTextTranslationPayload(String textToTranslate, String sourceLang, String targetLang) {
+        String sourceLanguageName = getLanguageName(sourceLang); // Reutiliza o helper
+        String targetLanguageName = getLanguageName(targetLang); // Reutiliza o helper
+
+        // Prompt simples para tradução
+        String prompt = String.format("Traduza o seguinte texto de '%s' para '%s'. Retorne APENAS o texto traduzido, sem nenhuma formatação adicional ou frases explicativas.\n\nTexto original:\n\"%s\"",
+                sourceLanguageName, targetLanguageName, textToTranslate.replace("\"", "\\\"")); // Escapa aspas no texto
+
         return String.format("""
         {
           "contents": [
             {
               "parts": [
-                { "text": "%s" },
+                { "text": "%s" }
+              ]
+            }
+          ],
+          "generation_config": {
+            "response_mime_type": "application/json",
+            "temperature": 0.2, 
+            "maxOutputTokens": 2048 
+          }
+        }
+        """, prompt.replace("\n", "\\n")); // Escapa novas linhas no prompt JSON
+    }
+
+    // Adapted buildGeminiPayload method
+    private String buildGeminiPayload(byte[] imageBytes, String sourceLang, String targetLang, int processedWidth, int processedHeight) {
+        String base64Image = Base64.getEncoder().encodeToString(imageBytes);
+        String sourceLanguageName = getLanguageName(sourceLang);
+        String targetLanguageName = getLanguageName(targetLang);
+
+        // Using the prompt structure from your input, adapted slightly for clarity and consistency
+        // The prompt now asks for coordinates relative to the image it's analyzing (the processed one)
+        String prompt = String.format("""
+        ANÁLISE DE MANGÁ - Siga EXATAMENTE:
+        A imagem que você está analisando tem %d x %d pixels. TODAS as coordenadas devem ser baseadas nestas dimensões.
+
+        1. Detecte TODOS os balões de diálogo na imagem.
+        2. Para CADA balão:
+           - Coordenadas ABSOLUTAS (x,y) do CANTO SUPERIOR ESQUERDO do balão.
+           - Largura (width) e altura (height) PRECISAS do balão.
+           - Texto ORIGINAL extraído do balão em %s.
+           - Tradução do texto original para %s.
+        3. Formato de SAÍDA OBRIGATÓRIO (JSON Array):
+           [{"x":number,"y":number,"width":number,"height":number,"text":"texto original","translated":"texto traduzido"}]
+        4. As coordenadas (x, y, width, height) devem ser em PIXELS e relativas às dimensões da imagem que você está analisando (%d x %d pixels).
+        5. Inclua APENAS o JSON array na resposta, SEM markdown, comentários ou qualquer outro texto fora do JSON.
+        6. Se nenhum texto/balão for encontrado, retorne um JSON array vazio: [].
+        """, processedWidth, processedHeight, sourceLanguageName, targetLanguageName, processedWidth, processedHeight);
+
+        return String.format("""
+        {
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text": "%s"
+                },
                 {
                   "inline_data": {
                     "mime_type": "image/png",
@@ -157,11 +214,16 @@ public class GeminiService {
     }
 
     private String getLanguageName(String langCode) {
+        if (langCode == null || langCode.trim().isEmpty()) {
+            return "o idioma original"; // Default if langCode is not specific
+        }
         return switch (langCode.toLowerCase()) {
             case "pt", "pt-br" -> "português brasileiro";
             case "en", "en-us" -> "inglês americano";
             case "es" -> "espanhol";
             case "fr" -> "francês";
+            case "ja", "jp" -> "japonês";
+            // Add more as needed
             default -> langCode;
         };
     }
